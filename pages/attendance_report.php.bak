@@ -1,0 +1,262 @@
+<?php
+require_once '../config/config.php';
+
+if(!isset($_SESSION["loggedin"]) || $_SESSION["loggedin"] !== true || $_SESSION["role"] !== 'Super Admin'){
+    header("location: login.php");
+    exit;
+}
+
+$selected_month = isset($_GET['month']) ? $_GET['month'] : date('Y-m');
+$start_date = $selected_month . '-01';
+$end_date = date('Y-m-t', strtotime($start_date));
+
+// Function to get attendance data for a specific role
+function getAttendanceData($pdo, $start_date, $end_date, $role) {
+    $sql = "SELECT e.employee_id, e.first_name, e.last_name, 
+                   DATE_FORMAT(a.date, '%Y-%m-%d') as date, 
+                   MIN(a.punch_in_time) as punch_in_time, 
+                   MAX(a.punch_out_time) as punch_out_time,
+                   COUNT(DISTINCT a.date) as days_worked
+            FROM users u
+            JOIN employees e ON u.employee_id = e.employee_id
+            LEFT JOIN attendance a ON e.employee_id = a.employee_id 
+                AND a.date BETWEEN :start_date AND :end_date
+            WHERE u.role = :role
+            GROUP BY e.employee_id, e.first_name, e.last_name, a.date
+            ORDER BY e.last_name, e.first_name, a.date";
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([
+        ':start_date' => $start_date, 
+        ':end_date' => $end_date,
+        ':role' => $role
+    ]);
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+// Get attendance data for employees and HR admins
+$employees_data = getAttendanceData($pdo, $start_date, $end_date, 'Employee');
+$hr_data = getAttendanceData($pdo, $start_date, $end_date, 'HR Admin');
+
+// Function to calculate working hours
+function calculateWorkingHours($punch_in, $punch_out) {
+    if (!$punch_in || !$punch_out) return 'N/A';
+    
+    $start = new DateTime($punch_in);
+    $end = new DateTime($punch_out);
+    $diff = $start->diff($end);
+    
+    return $diff->format('%H:%I:%S');
+}
+?>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Attendance Report</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+    <link rel="stylesheet" href="../assets/css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        .nav-tabs .nav-link.active {
+            font-weight: 600;
+            border-bottom: 3px solid #007bff;
+        }
+        .tab-content {
+            padding: 20px 0;
+        }
+        .table th {
+            white-space: nowrap;
+        }
+        .badge-present {
+            background-color: #28a745;
+        }
+        .badge-absent {
+            background-color: #dc3545;
+        }
+        .badge-partial {
+            background-color: #ffc107;
+            color: #212529;
+        }
+    </style>
+</head>
+<body>
+    <div class="wrapper">
+        <?php include 'templates/sidebar.php'; ?>
+
+        <div id="content">
+            <nav class="navbar navbar-expand-lg navbar-light bg-light">
+                <div class="container-fluid">
+                    <button type="button" id="sidebarCollapse" class="btn btn-info">
+                        <i class="fas fa-align-left"></i>
+                        <span>Toggle Sidebar</span>
+                    </button>
+                </div>
+            <div class="container-fluid">
+                <h1 class="page-title">Monthly Attendance Report</h1>
+                <form method="get" class="form-inline mb-4">
+                    <div class="form-group mr-3">
+                        <label for="month" class="mr-2">Select Month:</label>
+                        <input type="month" id="month" name="month" class="form-control" value="<?php echo htmlspecialchars($selected_month); ?>">
+                        <button type="submit" class="btn btn-primary ml-2">Generate</button>
+                    </div>
+                </form>
+
+                <ul class="nav nav-tabs" id="attendanceTabs" role="tablist">
+                    <li class="nav-item">
+                        <a class="nav-link active" id="employees-tab" data-toggle="tab" href="#employees" role="tab" aria-controls="employees" aria-selected="true">
+                            <i class="fas fa-users mr-1"></i> Employees
+                            <span class="badge badge-primary ml-1"><?php echo count(array_unique(array_column($employees_data, 'employee_id'))); ?></span>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" id="hr-tab" data-toggle="tab" href="#hr" role="tab" aria-controls="hr" aria-selected="false">
+                            <i class="fas fa-user-tie mr-1"></i> HR Admins
+                            <span class="badge badge-primary ml-1"><?php echo count(array_unique(array_column($hr_data, 'employee_id'))); ?></span>
+                        </a>
+                    </li>
+                </ul>
+
+                <div class="tab-content" id="attendanceTabsContent">
+                    <!-- Employees Tab -->
+                    <div class="tab-pane fade show active" id="employees" role="tabpanel" aria-labelledby="employees-tab">
+                        <?php if (!empty($employees_data)): ?>
+                            <div class="table-responsive mt-3">
+                                <table class="table table-bordered table-striped table-hover">
+                                    <thead class="thead-dark">
+                                        <tr>
+                                            <th>Employee ID</th>
+                                            <th>Name</th>
+                                            <th>Date</th>
+                                            <th>Punch In</th>
+                                            <th>Punch Out</th>
+                                            <th>Working Hours</th>
+                                            <th>Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($employees_data as $row): ?>
+                                            <tr>
+                                                <td><?php echo htmlspecialchars($row['employee_id']); ?></td>
+                                                <td><?php echo htmlspecialchars($row['first_name'] . ' ' . $row['last_name']); ?></td>
+                                                <td><?php echo date('M j, Y', strtotime($row['date'])); ?></td>
+                                                <td><?php echo $row['punch_in_time'] ? date('h:i A', strtotime($row['punch_in_time'])) : '-'; ?></td>
+                                                <td><?php echo $row['punch_out_time'] ? date('h:i A', strtotime($row['punch_out_time'])) : '-'; ?></td>
+                                                <td><?php echo calculateWorkingHours($row['punch_in_time'], $row['punch_out_time']); ?></td>
+                                                <td>
+                                                    <?php
+                                                    $status = '';
+                                                    $status_class = '';
+
+                                                    if ($row['punch_in_time'] && $row['punch_out_time']) {
+                                                        $status = 'Present';
+                                                        $status_class = 'badge-present';
+                                                    } elseif ($row['punch_in_time'] || $row['punch_out_time']) {
+                                                        $status = 'Half Day';
+                                                        $status_class = 'badge-partial';
+                                                    } else {
+                                                        $status = 'Absent';
+                                                        $status_class = 'badge-absent';
+                                                    }
+                                                    ?>
+                                                    <span class="badge <?php echo $status_class; ?> badge-pill"><?php echo $status; ?></span>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <?php else: ?>
+                            <div class="alert alert-info mt-3">No attendance records found for employees in the selected month.</div>
+                        <?php endif; ?>
+                    </div>
+
+                    <!-- HR Admins Tab -->
+                    <div class="tab-pane fade" id="hr" role="tabpanel" aria-labelledby="hr-tab">
+                        <?php if (!empty($hr_data)): ?>
+                            <div class="table-responsive mt-3">
+                                <table class="table table-bordered table-striped table-hover">
+                                    <thead class="thead-dark">
+                                        <tr>
+                                            <th>Employee ID</th>
+                                            <th>Name</th>
+                                            <th>Date</th>
+                                            <th>Punch In</th>
+                                            <th>Punch Out</th>
+                                            <th>Working Hours</th>
+                                            <th>Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <?php foreach ($hr_data as $row): ?>
+                                            <tr>
+                                                <td><?php echo htmlspecialchars($row['employee_id']); ?></td>
+                                                <td><?php echo htmlspecialchars($row['first_name'] . ' ' . $row['last_name']); ?></td>
+                                                <td><?php echo date('M j, Y', strtotime($row['date'])); ?></td>
+                                                <td><?php echo $row['punch_in_time'] ? date('h:i A', strtotime($row['punch_in_time'])) : '-'; ?></td>
+                                                <td><?php echo $row['punch_out_time'] ? date('h:i A', strtotime($row['punch_out_time'])) : '-'; ?></td>
+                                                <td><?php echo calculateWorkingHours($row['punch_in_time'], $row['punch_out_time']); ?></td>
+                                                <td>
+                                                    <?php
+                                                    $status = '';
+                                                    $status_class = '';
+
+                                                    if ($row['punch_in_time'] && $row['punch_out_time']) {
+                                                        $status = 'Present';
+                                                        $status_class = 'badge-present';
+                                                    } elseif ($row['punch_in_time'] || $row['punch_out_time']) {
+                                                        $status = 'Half Day';
+                                                        $status_class = 'badge-partial';
+                                                    } else {
+                                                        $status = 'Absent';
+                                                        $status_class = 'badge-absent';
+                                                    }
+                                                    ?>
+                                                    <span class="badge <?php echo $status_class; ?> badge-pill"><?php echo $status; ?></span>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        <?php else: ?>
+                            <div class="alert alert-info mt-3">No attendance records found for HR admins in the selected month.</div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+
+                <div class="mt-4">
+                    <a href="export_attendance.php?month=<?php echo urlencode($selected_month); ?>" class="btn btn-success">
+                        <i class="fas fa-file-export mr-1"></i> Export to Excel
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/popper.js@1.16.1/dist/umd/popper.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+    <script>
+        $(document).ready(function () {
+            // Toggle sidebar
+            $('#sidebarCollapse').on('click', function () {
+                $('#sidebar').toggleClass('active');
+            });
+
+            // Remember the active tab after page reload
+            $('a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
+                localStorage.setItem('activeTab', $(e.target).attr('href'));
+            });
+
+            // Activate the saved tab
+            var activeTab = localStorage.getItem('activeTab');
+            if (activeTab) {
+                $('.nav-tabs a[href="' + activeTab + '"]').tab('show');
+            }
+        });
+    </script>
+</body>
+</html>
